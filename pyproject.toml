@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switch2-ethernet-offline"
+dynamic = ["version"]
+description = "Wired, internet-free link between a Windows PC and a Nintendo Switch 2 that still passes the console's connection test."
+readme = "README.md"
+license = "GPL-2.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+classifiers = [
+    "Environment :: Console",
+    "Environment :: Win32 (MS Windows)",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Networking",
+]
+
+[project.urls]
+Homepage = "https://github.com/fernando-granco/switch2-ethernet-offline"
+Issues = "https://github.com/fernando-granco/switch2-ethernet-offline/issues"
+
+[project.scripts]
+switch2-offline = "switch2_offline.cli:main"
+
+[project.gui-scripts]
+switch2-offline-gui = "switch2_offline.cli:gui_main"
+
+[tool.setuptools]
+packages = ["switch2_offline"]
+
+[tool.setuptools.package-data]
+switch2_offline = ["app.ico"]
+
+[tool.setuptools.dynamic]
+version = { attr = "switch2_offline.__version__" }

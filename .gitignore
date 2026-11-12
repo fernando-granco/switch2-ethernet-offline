@@ -1,0 +1,15 @@
+# Build output (the exe is published on the Releases page, not committed)
+build/
+dist/
+*.egg-info/
+*.exe
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Logs and local, machine-specific files
+*.log
+local/
