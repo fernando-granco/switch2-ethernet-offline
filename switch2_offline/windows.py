@@ -193,6 +193,27 @@ def ping(ip: str) -> bool:
 
 
 # ---------------------------------------------------------------- changes
+# Windows keeps an adapter's addresses twice: live (ActiveStore) and saved
+# (PersistentStore). If they disagree, e.g. a manual address left live while
+# the saved settings say DHCP, the NetTCPIP cmdlets refuse with "Inconsistent
+# parameters PolicyStore PersistentStore and Dhcp Enabled". So both stores are
+# cleaned explicitly, and netsh switches between static and DHCP: it updates
+# both stores at once, also while the cable is unplugged.
+_PS_HELPERS = """
+function Invoke-Netsh {
+  $out = netsh @args 2>&1 | Out-String
+  if ($LASTEXITCODE) { throw "netsh $($args -join ' ') failed: $($out.Trim())" }
+}
+function Remove-ManualAddresses($alias, $ip) {
+  foreach ($store in 'ActiveStore', 'PersistentStore') {
+    Get-NetIPAddress -InterfaceAlias $alias -AddressFamily IPv4 -PolicyStore $store -ErrorAction SilentlyContinue |
+      Where-Object { $_.PrefixOrigin -eq 'Manual' -and (-not $ip -or $_.IPAddress -eq $ip) } |
+      Remove-NetIPAddress -Confirm:$false -ErrorAction SilentlyContinue
+  }
+}
+"""
+
+
 def setup(adapter: str, ip: str, prefix: int) -> None:
     """Static ip/prefix with no gateway or DNS, plus the firewall rules.
     Refuses if the adapter is not wired or the link would not be isolated."""
@@ -204,15 +225,14 @@ def setup(adapter: str, ip: str, prefix: int) -> None:
         raise SetupError(f"'{adapter}' is not a physical wired adapter")
     if problems := isolation_problems(adapter, ip, prefix):
         raise SetupError("refusing to set up:\n  - " + "\n  - ".join(problems))
-    a, group = _quote(adapter), _quote(FIREWALL_GROUP)
-    _powershell(f"""
-$a = {a}; $ip = {_quote(ip)}; $group = {group}
-Set-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -Dhcp Disabled
+    mask = ipaddress.IPv4Network(f"0.0.0.0/{int(prefix)}").netmask
+    _powershell(_PS_HELPERS + f"""
+$a = {_quote(adapter)}; $ip = {_quote(ip)}; $group = {_quote(FIREWALL_GROUP)}
+$index = (Get-NetAdapter -Name $a).ifIndex
+Remove-ManualAddresses $a $null
+Invoke-Netsh interface ipv4 set address name=$index source=static address=$ip mask={mask} gateway=none
 Get-NetRoute -InterfaceAlias $a -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue |
   Remove-NetRoute -Confirm:$false
-Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-  Remove-NetIPAddress -Confirm:$false
-New-NetIPAddress -InterfaceAlias $a -IPAddress $ip -PrefixLength {int(prefix)} | Out-Null
 Set-DnsClientServerAddress -InterfaceAlias $a -ResetServerAddresses
 Set-DnsClient -InterfaceAlias $a -RegisterThisConnectionsAddress $false
 Get-NetFirewallRule -Group $group -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -226,16 +246,22 @@ New-NetFirewallRule @rule -DisplayName "$group DHCP" -Protocol UDP -LocalPort 67
 
 
 def restore(adapter: str, ip: str) -> None:
-    """Undo setup(): automatic IP and DNS again, firewall rules removed."""
+    """Undo setup(): automatic IP and DNS again, firewall rules removed.
+    Also repairs a half-finished setup or restore."""
     require_admin()
     if not adapter_state(adapter).found:
         raise SetupError(f"adapter '{adapter}' not found (list them with the 'adapters' command)")
-    _powershell(f"""
-$a = {_quote(adapter)}
+    _powershell(_PS_HELPERS + f"""
+$a = {_quote(adapter)}; $ip = {_quote(ip)}
+$index = (Get-NetAdapter -Name $a).ifIndex
 Get-NetFirewallRule -Group {_quote(FIREWALL_GROUP)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-Get-NetIPAddress -InterfaceAlias $a -AddressFamily IPv4 -IPAddress {_quote(ip)} -ErrorAction SilentlyContinue |
-  Remove-NetIPAddress -Confirm:$false
-Set-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4 -Dhcp Enabled
+if ((Get-NetIPInterface -InterfaceAlias $a -AddressFamily IPv4).Dhcp -eq 'Disabled') {{
+  Invoke-Netsh interface ipv4 set address name=$index source=dhcp
+}}
+Remove-ManualAddresses $a $ip
 Set-DnsClientServerAddress -InterfaceAlias $a -ResetServerAddresses
 Set-DnsClient -InterfaceAlias $a -RegisterThisConnectionsAddress $true
+if (Get-NetIPAddress -InterfaceAlias $a -IPAddress $ip -ErrorAction SilentlyContinue) {{
+  throw "Windows kept $ip on '$a'. Unplug and replug the cable, or disable and re-enable the adapter, then restore again."
+}}
 """)
