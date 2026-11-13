@@ -15,18 +15,21 @@ Everything works from the **command line**. The **GUI** (`SwitchOfflineEthernet.
 - Windows 10 or 11 with a wired Ethernet port (USB Ethernet adapters work too).
 - A Switch 2 in a dock with a LAN port, or with a USB LAN adapter, and an Ethernet cable.
 - Administrator rights, to change the adapter's address and firewall rules.
-- Command line: Python 3.9 or newer. No other packages are needed.
+- Command line: Python 3.9 or newer. No other packages are needed. The GUI exe needs no Python.
 
 ## Install
 
-Pick one:
+Pick one. Each option runs the same code. All but the exe need [Python](https://www.python.org/downloads/) 3.9 or newer and nothing else.
 
-- **GUI only**: download `SwitchOfflineEthernet.exe` from [Releases](https://github.com/fernando-granco/switch2-ethernet-offline/releases).
+- **GUI (exe)**: download `SwitchOfflineEthernet.exe` from [Releases](https://github.com/fernando-granco/switch2-ethernet-offline/releases). Python is not needed.
+- **Command line (zip)**:
+  1. Download `switch2-offline-cli-<version>.zip` from [Releases](https://github.com/fernando-granco/switch2-ethernet-offline/releases) and extract it anywhere.
+  2. In an administrator terminal, run `switch2-offline.cmd` from that folder in place of `switch2-offline` (in PowerShell, `.\switch2-offline.cmd start`). You can call it from any folder by its full path.
 - **pip**: installs the `switch2-offline` and `switch2-offline-gui` commands.
   ```powershell
   pip install git+https://github.com/fernando-granco/switch2-ethernet-offline
   ```
-- **No install**: clone the repo and run `python -m switch2_offline` from its folder. It behaves the same as `switch2-offline`.
+- **From a clone**: run `python -m switch2_offline` in the repo folder. It behaves the same as `switch2-offline`.
 
 ## Quick start (command line)
 
@@ -101,6 +104,7 @@ Run `SwitchOfflineEthernet.exe` (or `switch2-offline gui`) and accept the admini
 | **PC IP** | *offline mode*, *normal*, or *partly configured* (press Start or Stop to fix). |
 | **Firewall** | This tool's inbound rules (n/4). |
 | **Server** | DNS / HTTP / DHCP: `running`, `waiting for link`, `stopped`, `error`, `blocked` or `off`. |
+| **Isolation** | Re-checked every 10 s while the server runs. Red **NOT ISOLATED** means the console could reach the internet through this PC; a warning window explains why. |
 | **Console** | Whether the console answers ping. |
 | **Activity** | DNS answers, connection checks, rejected requests, DHCP replies, and the time of the last check. |
 | **Start / Stop server only** | Runs or stops the services without touching the adapter (like `serve`). |
@@ -119,10 +123,18 @@ When you close the window, it asks whether to restore the adapter. **No** leaves
 
 **Why the console stays offline:**
 - The adapter has no gateway.
-- `setup` **refuses to run** if Windows IP routing, IPv4 forwarding or Internet Connection Sharing is on, or if another network already uses the same subnet. With those off, Windows never forwards the console's packets.
-- Nothing listens on HTTPS (443) or any other port.
+- `setup` **refuses to run** if any of these is true. With all of them off, Windows never forwards the console's packets.
+  - Windows IP routing is on.
+  - IPv4 or IPv6 forwarding is on for any adapter.
+  - Internet Connection Sharing is on.
+  - A Windows NAT covers the subnet.
+  - Another network already uses the same subnet.
+- **While the services run**, the same checks repeat every 10 seconds, together with a check that the adapter has no gateway. This catches a change made after Start, such as turning on sharing or a VPN that routes for other devices. Any problem is logged as `WARN NOT ISOLATED: …`. The GUI also turns the **Isolation** row red and shows a warning.
+- The tool forwards nothing itself. DNS answers come from the PC, and HTTP answers only the connection test. Nothing listens on HTTPS (443) or any other port.
 
 The "online" result is local only.
+
+**On the console:** a Switch 2 with saved Wi-Fi networks can join one of them if the wired link drops, for example when it is undocked. To be sure it stays offline, delete its saved Wi-Fi networks under **System Settings › Internet**.
 
 ## DHCP
 
@@ -134,7 +146,8 @@ A manual console IP is the reliable choice, so DHCP is off by default. On Window
 | --- | --- |
 | Console: **2110-2963 Unable to obtain IP address** | The console is set to Automatic. Enter the manual settings, or try `--dhcp`. |
 | `error: administrator rights are needed` | Open the terminal with *Run as administrator*. |
-| `refusing to set up: …` | Do what the message says (turn off routing/ICS, or disconnect the network that uses the same subnet). |
+| `refusing to set up: …` | Do what the message says (turn off routing/forwarding/ICS, remove the NAT, or disconnect the network that uses the same subnet). |
+| `WARN NOT ISOLATED: …` while running | Something changed after Start. Undo it (the message says what), or stop until it is fixed. |
 | `waiting for link` doesn't clear | Cable unplugged, console/dock off, or the wrong adapter. Check `switch2-offline adapters`. |
 | `cannot use … :53` / `:80` | Another copy is running, or another program uses that port. |
 | No log lines and no ping reply | Third-party firewall or security software may block the new network. Mark it as trusted/local, or allow the program. |
@@ -148,6 +161,7 @@ A manual console IP is the reliable choice, so DHCP is off by default. On Window
 python -m unittest -v               # tests: no admin and no console needed
 python -m pip install pyinstaller
 .\packaging\build_exe.ps1           # builds dist\SwitchOfflineEthernet.exe
+python packaging\build_zip.py       # builds dist\switch2-offline-cli-<version>.zip
 ```
 
 | Path | Contents |
@@ -156,8 +170,8 @@ python -m pip install pyinstaller
 | `switch2_offline/windows.py` | Adapter setup/restore/status through PowerShell, plus the isolation checks. |
 | `switch2_offline/cli.py` | The commands. |
 | `switch2_offline/gui.py` | The tkinter window, built on the same functions. |
-| `packaging/` | PyInstaller entry point and build script. |
-| `.github/workflows/build.yml` | Runs the tests and builds the exe on every push. Pushing a `v*` tag attaches the exe to that release. |
+| `packaging/` | Build scripts for the exe (PyInstaller) and the command-line zip, and the zip's `switch2-offline.cmd` launcher. |
+| `.github/workflows/build.yml` | Runs the tests and builds the exe and the zip on every push. Pushing a `v*` tag attaches both to that release. |
 
 ## Credits and license
 

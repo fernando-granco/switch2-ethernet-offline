@@ -12,6 +12,8 @@ import ctypes
 import ipaddress
 import json
 import subprocess
+import threading
+import time
 from dataclasses import dataclass, field
 
 from . import DEFAULT_ADAPTER, FIREWALL_GROUP
@@ -142,8 +144,12 @@ def resolve_adapter(requested: str | None, ip: str) -> str:
     return requested or choose_adapter(None, *wired_adapters(ip))
 
 
-def isolation_problems(adapter: str, ip: str, prefix: int) -> list[str]:
-    facts = json.loads(_powershell("""
+def isolation_problems(adapter: str | None, ip: str, prefix: int, offline: bool = False) -> list[str]:
+    """See find_isolation_problems. `offline` also checks `adapter` for a gateway,
+    which is expected before setup but never once the adapter is in offline mode."""
+    routes = (f"@(Get-NetRoute -InterfaceAlias {_quote(adapter)} -DestinationPrefix '0.0.0.0/0', '::/0' "
+              "-ErrorAction SilentlyContinue | ForEach-Object NextHop)") if offline and adapter else "@()"
+    facts = json.loads(_powershell(r"""
 $ics = @()
 try {
   $share = New-Object -ComObject HNetCfg.HNetShare
@@ -153,34 +159,99 @@ try {
     }
   }
 } catch { $ics = $null }
+# Get-NetNat only fails when Windows NAT is not installed, i.e. there is none.
+$nat = @()
+try { $nat = @(Get-NetNat | ForEach-Object InternalIPInterfaceAddressPrefix) } catch { }
 [pscustomobject]@{
-  router = [int](Get-ItemProperty 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters').IPEnableRouter
-  forwarding = @(Get-NetIPInterface -AddressFamily IPv4 | Where-Object Forwarding -eq 'Enabled' |
-                 ForEach-Object InterfaceAlias)
+  router = [int](Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters').IPEnableRouter
+  forwarding = @(Get-NetIPInterface | Where-Object Forwarding -eq 'Enabled' |
+                 ForEach-Object { "$($_.InterfaceAlias) ($($_.AddressFamily))" })
   ics = $ics
+  nat = $nat
+  gateways = """ + routes + r"""
   addresses = @(Get-NetIPAddress -AddressFamily IPv4 |
                 ForEach-Object { [pscustomobject]@{ alias = $_.InterfaceAlias; ip = $_.IPAddress } })
 } | ConvertTo-Json -Compress -Depth 3"""))
     return find_isolation_problems(facts, adapter, ipaddress.IPv4Network(f"{ip}/{prefix}", strict=False))
 
 
-def find_isolation_problems(facts: dict, adapter: str, network: ipaddress.IPv4Network) -> list[str]:
-    """Reasons the console could reach the internet, or the subnet would clash."""
+def find_isolation_problems(facts: dict, adapter: str | None, network: ipaddress.IPv4Network) -> list[str]:
+    """Ways the console could reach the internet through this PC, or a subnet clash."""
     problems = []
     if facts.get("router"):
         problems.append("Windows IP routing is on (IPEnableRouter). Turn it off first.")
     if forwarding := _as_list(facts.get("forwarding")):
-        problems.append(f"IPv4 forwarding is on for: {', '.join(forwarding)}. Turn it off first.")
+        problems.append(f"IP forwarding is on for: {', '.join(forwarding)}. Turn it off first.")
     if facts.get("ics") is None:
         problems.append("could not check Internet Connection Sharing; make sure it is off.")
     elif shared := _as_list(facts["ics"]):
         problems.append(f"Internet Connection Sharing is on for: {', '.join(shared)}. Turn it off first.")
+    if nat := [p for p in _as_list(facts.get("nat")) if _overlaps(p, network)]:
+        problems.append(f"a Windows NAT covers {', '.join(nat)}, which includes {network}. "
+                        "Remove it (Remove-NetNat) or choose another --ip.")
+    if gateways := _as_list(facts.get("gateways")):
+        problems.append(f"'{adapter}' has a gateway ({', '.join(gateways)}): something re-enabled "
+                        "DHCP or added a route. Stop and start offline mode again.")
     clash = sorted({a["alias"] for a in _as_list(facts.get("addresses"))
                     if a["alias"] != adapter and ipaddress.IPv4Address(a["ip"]) in network})
     if clash:
         problems.append(f"{network} is already used by: {', '.join(clash)}. "
                         "Disconnect that network or choose another --ip.")
     return problems
+
+
+def _overlaps(prefix: str, network: ipaddress.IPv4Network) -> bool:
+    try:
+        other = ipaddress.ip_network(prefix, strict=False)
+    except ValueError:
+        return False
+    return other.version == 4 and other.overlaps(network)
+
+
+class IsolationGuard:
+    """Re-runs the isolation checks every `interval` seconds while the link is in
+    use, so a change made after Start (sharing, forwarding, a VPN, a gateway) is
+    reported at once. `report(tag, message)` gets one line per change."""
+
+    def __init__(self, adapter: str | None, ip: str, prefix: int, report,
+                 interval: float = 10, check=isolation_problems):
+        self.adapter, self.ip, self.prefix = adapter, ip, prefix
+        self.report, self.interval, self._check = report, interval, check
+        self.problems: list[str] = []
+        self.error = ""
+        self.last_check = ""
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def check(self) -> None:
+        """One round: run the checks and report what changed since the last round."""
+        try:
+            adapter = self.adapter or wired_adapters(self.ip)[1]
+            problems, error = self._check(adapter, self.ip, self.prefix, offline=True), ""
+        except SetupError as exc:
+            problems, error = self.problems, str(exc)
+        if error and error != self.error:
+            self.report("WARN", f"could not check isolation: {error}")
+        for problem in problems:
+            if problem not in self.problems:
+                self.report("WARN", "NOT ISOLATED: " + problem)
+        if self.problems and not problems and not error:
+            self.report("OK", "isolation ok again")
+        self.problems, self.error = problems, error
+        self.last_check = time.strftime("%H:%M:%S")
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self.check()
+            self._stop.wait(self.interval)
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="isolation-guard", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
 
 
 def ping(ip: str) -> bool:

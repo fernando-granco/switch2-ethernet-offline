@@ -18,7 +18,7 @@ from .services import OfflineNet
 
 TITLE = "Switch 2 Offline Ethernet"
 GREEN, AMBER, RED, GREY = "#1a9c4a", "#c98a00", "#c0392b", "#8a8a8a"
-ROWS = ("Cable", "PC IP", "Firewall", "Server", "Console", "Activity")
+ROWS = ("Cable", "PC IP", "Firewall", "Server", "Isolation", "Console", "Activity")
 
 
 def relaunch_as_admin(args) -> None:
@@ -41,6 +41,7 @@ class App:
         self.adapter = args.adapter or DEFAULT_ADAPTER  # read by worker threads
         self.events: queue.Queue = queue.Queue()        # worker threads -> Tk thread
         self.net: OfflineNet | None = None
+        self.guard: windows.IsolationGuard | None = None
         self.busy = False
         self.state: windows.AdapterState | None = None
         self.state_error = ""
@@ -132,6 +133,11 @@ class App:
         """Log a line from any thread."""
         self.events.put(("log", line))
 
+    def _on_guard_report(self, tag: str, message: str) -> None:
+        self.net.log(tag, message)  # the guard only runs while self.net exists
+        if message.startswith("NOT ISOLATED"):
+            self.events.put(("alert", message))
+
     def _on_server_log(self, line: str) -> None:
         if "connection check 200" in line:
             self.last_check = line[:8]
@@ -195,8 +201,14 @@ class App:
                                   dhcp=self.dhcp_var.get(), log_dir=self.args.log_dir,
                                   on_log=self._on_server_log)
             self.net.start()
+            self.guard = windows.IsolationGuard(self.adapter, self.ip, self.args.prefix,
+                                                report=self._on_guard_report)
+            self.guard.start()
 
     def _stop_server(self) -> None:
+        if self.guard:
+            self.guard.stop()
+            self.guard = None
         if self.server_running():
             self.net.stop()
 
@@ -278,6 +290,10 @@ class App:
                         if wanted != self.adapter:
                             self.adapter_var.set(wanted)
                             self._select(wanted)
+            elif kind == "alert":
+                messagebox.showwarning(TITLE, data.removeprefix("NOT ISOLATED: ") +
+                                       "\n\nThe console may be able to reach the internet "
+                                       "through this PC until this is fixed.")
             elif kind == "close":
                 self.closing = True
                 self.root.destroy()
@@ -314,6 +330,17 @@ class App:
             self._set("Server", color, f"DNS {st['dns']} · HTTP {st['http']} · DHCP {st['dhcp']}")
         else:
             self._set("Server", GREY, "stopped")
+
+        guard = self.guard
+        if not guard or not guard.last_check:
+            self._set("Isolation", GREY, "checked at Start and every 10 s while the server runs")
+        elif guard.problems:
+            self._set("Isolation", RED, "NOT ISOLATED: " + guard.problems[0][:110])
+        elif guard.error:
+            self._set("Isolation", AMBER, "could not check: " + guard.error[:100])
+        else:
+            self._set("Isolation", GREEN, "ok: no routing, forwarding, sharing, NAT or gateway "
+                                          f"(checked {guard.last_check})")
 
         console = self.args.console_ip
         self._set("Console", *{None: (GREY, f"{console}: checked once the link is up in offline mode"),

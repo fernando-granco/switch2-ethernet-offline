@@ -7,7 +7,7 @@ import ipaddress
 import os
 from pathlib import Path
 
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 DEFAULT_ADAPTER = "Ethernet"
 DEFAULT_IP = "192.168.77.1"            # this PC, on the cable

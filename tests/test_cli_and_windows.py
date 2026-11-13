@@ -6,10 +6,12 @@ import os
 import unittest
 
 from switch2_offline import cli, console_settings, validate_addresses
-from switch2_offline.windows import AdapterState, SetupError, choose_adapter, find_isolation_problems
+from switch2_offline.windows import (AdapterState, IsolationGuard, SetupError, choose_adapter,
+                                     find_isolation_problems)
 
 NET = ipaddress.IPv4Network("192.168.77.0/24")
-CLEAN = {"router": 0, "forwarding": [], "ics": [], "addresses": [{"alias": "Wi-Fi", "ip": "10.0.0.5"}]}
+CLEAN = {"router": 0, "forwarding": [], "ics": [], "nat": [], "gateways": [],
+         "addresses": [{"alias": "Wi-Fi", "ip": "10.0.0.5"}]}
 
 
 class Parser(unittest.TestCase):
@@ -83,6 +85,12 @@ class Isolation(unittest.TestCase):
         self.assertIn("Wi-Fi", self.problems(forwarding="Wi-Fi")[0])  # one-item JSON arrays are scalars
         self.assertIn("Sharing is on", self.problems(ics=["Wi-Fi"])[0])
         self.assertIn("could not check", self.problems(ics=None)[0])
+        self.assertIn("Wi-Fi (IPv6)", self.problems(forwarding="Wi-Fi (IPv6)")[0])
+        self.assertIn("NAT covers", self.problems(nat="192.168.0.0/16")[0])
+        self.assertIn("has a gateway (10.0.0.1)", self.problems(gateways="10.0.0.1")[0])
+
+    def test_unrelated_nat_is_fine(self):  # e.g. the NAT that WSL or Docker creates
+        self.assertEqual(self.problems(nat=["172.17.0.0/16", "fd00::/64", "not a prefix"]), [])
 
     def test_subnet_clash_ignores_own_adapter(self):
         addresses = [{"alias": "Ethernet", "ip": "192.168.77.1"}, {"alias": "Wi-Fi", "ip": "192.168.77.5"}]
@@ -90,6 +98,35 @@ class Isolation(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("Wi-Fi", problems[0])
         self.assertNotIn("Ethernet,", problems[0])
+
+
+class Guard(unittest.TestCase):
+    """IsolationGuard reports each change once, not every round."""
+
+    def run_rounds(self, *rounds):
+        results, reports = iter(rounds), []
+
+        def check(adapter, ip, prefix, offline):
+            result = next(results)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        guard = IsolationGuard("Ethernet", "192.168.77.1", 24, lambda tag, msg: reports.append(f"{tag} {msg}"),
+                               check=check)
+        for _ in rounds:
+            guard.check()
+        return guard, reports
+
+    def test_reports_changes_once(self):
+        guard, reports = self.run_rounds([], ["ICS on"], ["ICS on"], ["ICS on", "gateway"], [])
+        self.assertEqual(reports, ["WARN NOT ISOLATED: ICS on", "WARN NOT ISOLATED: gateway",
+                                   "OK isolation ok again"])
+        self.assertEqual(guard.problems, [])
+
+    def test_failed_check_keeps_last_result(self):
+        guard, reports = self.run_rounds(["ICS on"], SetupError("timeout"), SetupError("timeout"))
+        self.assertEqual(reports, ["WARN NOT ISOLATED: ICS on", "WARN could not check isolation: timeout"])
+        self.assertEqual((guard.problems, guard.error), (["ICS on"], "timeout"))
 
 
 @unittest.skipUnless(os.name == "nt", "the GUI and its status queries are Windows-only")

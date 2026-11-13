@@ -81,18 +81,21 @@ def print_console_settings(args) -> None:
 
 
 # -------------------------------------------------------------- commands
-def serve(args) -> None:
-    """Run the services until Ctrl+C."""
+def serve(args, adapter: str | None = None) -> None:
+    """Run the services until Ctrl+C, re-checking isolation every 10 seconds."""
     net = OfflineNet(args.ip, args.prefix, args.console_ip, dhcp=args.dhcp, log_dir=args.log_dir)
     net.start()
+    guard = windows.IsolationGuard(adapter, args.ip, args.prefix, report=net.log)
+    guard.start()
     print("Running. Press Ctrl+C to stop.", flush=True)
     try:
         while True:
             time.sleep(60)
-            net.log("STAT", net.stats_line())
+            net.log("STAT", net.stats_line() + (" NOT-ISOLATED" if guard.problems else ""))
     except KeyboardInterrupt:
         pass
     finally:
+        guard.stop()
         net.stop()
 
 
@@ -106,7 +109,7 @@ def cmd_start(args) -> None:
         print(f"'{adapter}' is now {args.ip}/{args.prefix}: no gateway, firewall rules added.")
     print_console_settings(args)
     try:
-        serve(args)
+        serve(args, adapter)
     finally:
         if args.keep:
             print(f"'{adapter}' stays in offline mode. Undo with: switch2-offline restore")
@@ -147,8 +150,9 @@ def cmd_status(args) -> None:
     if s.link_up and args.ip in s.ips:
         reply = "answers ping" if windows.ping(args.console_ip) else "no reply"
         rows.append(("Console", f"{args.console_ip} {reply}"))
-    problems = windows.isolation_problems(adapter, args.ip, args.prefix)
-    rows.append(("Isolation", "ok" if not problems else "PROBLEM: " + " ".join(problems)))
+    problems = windows.isolation_problems(adapter, args.ip, args.prefix,
+                                          offline=s.mode(args.ip) == "offline")
+    rows.append(("Isolation", "ok" if not problems else "NOT ISOLATED: " + " ".join(problems)))
     print_rows(rows)
 
 
