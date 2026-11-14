@@ -3,9 +3,10 @@ import contextlib
 import io
 import ipaddress
 import os
+import time
 import unittest
 
-from switch2_offline import cli, console_settings, validate_addresses
+from switch2_offline import cli, console_settings, validate_addresses, windows
 from switch2_offline.windows import (AdapterState, IsolationGuard, SetupError, choose_adapter,
                                      find_isolation_problems)
 
@@ -129,8 +130,70 @@ class Guard(unittest.TestCase):
         self.assertEqual((guard.problems, guard.error), (["ICS on"], "timeout"))
 
 
+class Launch(unittest.TestCase):
+    def test_only_changed_options_are_passed_on(self):
+        parse = cli.build_parser().parse_args
+        self.assertEqual(windows.gui_options(parse(["gui"])), [])
+        self.assertEqual(windows.gui_options(parse(["gui", "-a", "LAN 2", "--console-ip", "192.168.77.50"]),
+                                             dhcp=True),
+                         ["--adapter", "LAN 2", "--console-ip", "192.168.77.50", "--dhcp"])
+
+    def test_gui_command_runs_the_package(self):
+        program, arguments, folder = windows.gui_command(["--tray"])
+        self.assertEqual(arguments, ["-m", "switch2_offline", "gui", "--tray"])
+        self.assertTrue(os.path.isdir(os.path.join(folder, "switch2_offline")))
+
+
 @unittest.skipUnless(os.name == "nt", "the GUI and its status queries are Windows-only")
 class GuiSmoke(unittest.TestCase):
+    def setUp(self):  # keep the tests away from the real settings file
+        import tempfile
+        from pathlib import Path
+        from switch2_offline import gui
+        self.saved, gui.SETTINGS = gui.SETTINGS, Path(tempfile.mkdtemp()) / "settings.json"
+
+    def tearDown(self):
+        from switch2_offline import gui
+        gui.SETTINGS = self.saved
+
+    def test_tray_icon(self):
+        from pathlib import Path
+        from switch2_offline import tray
+        clicks = []
+        icon = tray.TrayIcon("test", Path(tray.__file__).with_name("app.ico"), lambda: clicks.append(1), print)
+        try:
+            self.assertTrue(icon.show())
+            icon.set_tooltip("test: changed")
+            self.assertTrue(tray.open_running_copy())  # a left click, as another copy would send
+            for _ in range(20):
+                if clicks:
+                    break
+                time.sleep(0.05)
+            self.assertEqual(clicks, [1])
+        finally:
+            icon.hide()
+        self.assertFalse(icon.visible)
+        self.assertFalse(tray.open_running_copy())
+
+    def test_minimize_to_tray_and_back(self):
+        import tkinter as tk
+        from switch2_offline import gui
+        root = tk.Tk()
+        app = gui.App(root, cli.build_parser().parse_args(["gui"]))
+        try:
+            app.tray_var.set(True)
+            root.update()
+            root.iconify()
+            root.update()
+            self.assertEqual(root.state(), "withdrawn")
+            self.assertTrue(app.tray.visible)
+            app.show_window()
+            root.update()
+            self.assertEqual(root.state(), "normal")
+            self.assertFalse(app.tray.visible)
+        finally:
+            app.quit()
+
     def test_window_opens_and_closes(self):
         os.environ["SWITCH2_OFFLINE_SMOKE_TEST"] = "1500"
         try:

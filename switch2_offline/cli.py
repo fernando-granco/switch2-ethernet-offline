@@ -63,7 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
     command("status", "show the adapter, firewall, isolation and console state",
             [adapter, addresses])
     command("adapters", "list wired adapters", [addresses])
-    command("gui", "open the control window", [adapter, addresses, server])
+    gui = command("gui", "open the control window", [adapter, addresses, server])
+    gui.add_argument("--tray", action="store_true",
+                     help="start hidden in the notification area (tray)")
+    startup = command("startup", "open the GUI in the tray when you sign in to Windows "
+                                 "(admin to change)", [adapter, addresses, server])
+    startup.add_argument("action", nargs="?", choices=("on", "off", "status"), default="status",
+                         help="on: add, off: remove, status: show (default); on uses this "
+                              "command's options")
     return parser
 
 
@@ -164,13 +171,23 @@ def cmd_adapters(args) -> None:
         print(name + (f"   (offline mode, {args.ip})" if name == holder else ""))
 
 
+def cmd_startup(args) -> None:
+    if args.action == "on":
+        print("At sign-in, Windows will run: " + windows.enable_startup(windows.gui_options(args)))
+    elif args.action == "off":
+        windows.disable_startup()
+        print("No longer starts with Windows.")
+    else:
+        print("on" if windows.startup_enabled() else "off")
+
+
 def cmd_gui(args) -> None:
     from .gui import run  # tkinter is only needed for this command
     run(args)
 
 
 COMMANDS = {"start": cmd_start, "serve": cmd_serve, "setup": cmd_setup, "restore": cmd_restore,
-            "status": cmd_status, "adapters": cmd_adapters, "gui": cmd_gui}
+            "status": cmd_status, "adapters": cmd_adapters, "gui": cmd_gui, "startup": cmd_startup}
 
 
 def main(argv: list[str] | None = None) -> int:

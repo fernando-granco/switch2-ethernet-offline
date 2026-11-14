@@ -66,19 +66,21 @@ You only need to enter the console settings once. To use other networks on the c
 | `restore` | Undoes `setup`: automatic IP and DNS again, firewall rules removed. | yes |
 | `status` | Shows the link, mode, addresses, firewall rules, whether the console answers ping, and the isolation check. | no |
 | `adapters` | Lists wired adapters and marks the one in offline mode. | no |
-| `gui` | Opens the control window. Same options as `start`. | yes, for Start/Restore |
+| `gui` | Opens the control window. Same options as `start`, plus `--tray` to start hidden in the notification area. | yes, for Start/Restore |
+| `startup on` / `off` / `status` | Opens the GUI in the tray when you sign in to Windows (a scheduled task, so no administrator prompt each time). `on` keeps the options you give it. | yes, for on/off |
 
 Options (run `switch2-offline <command> -h` for details):
 
 | Option | Default | Commands |
 | --- | --- | --- |
-| `-a`, `--adapter NAME` | The adapter already in offline mode, else `Ethernet`, else the only wired adapter | start, setup, restore, status, gui |
+| `-a`, `--adapter NAME` | The adapter already in offline mode, else `Ethernet`, else the only wired adapter | start, setup, restore, status, gui, startup |
 | `--ip` | `192.168.77.1` (this PC) | all |
 | `--console-ip` | `192.168.77.100` | all |
 | `--prefix` | `24` | all |
-| `--dhcp` | off | start, serve, gui |
-| `--log-dir` | `%LOCALAPPDATA%\switch2-ethernet-offline\logs` | start, serve, gui |
+| `--dhcp` | off | start, serve, gui, startup |
+| `--log-dir` | `%LOCALAPPDATA%\switch2-ethernet-offline\logs` | start, serve, gui, startup |
 | `--keep` | off | start |
+| `--tray` | off | gui |
 
 Examples:
 
@@ -88,28 +90,35 @@ switch2-offline start --keep                   # stay in offline mode after Ctrl
 switch2-offline setup; switch2-offline serve   # set up once, then serve
 switch2-offline restore                        # back to normal later
 switch2-offline status                         # check everything (no admin needed)
+switch2-offline startup on                     # open the GUI in the tray at sign-in
 ```
 
 ## The GUI
 
 Run `SwitchOfflineEthernet.exe` (or `switch2-offline gui`) and accept the administrator prompt. The exe accepts the same options as `gui`, for example `SwitchOfflineEthernet.exe --adapter "Ethernet 2"`.
 
+The headline at the top says what is happening and what to do next. Hover over a status name or an option for a short explanation.
+
 | Part | Meaning |
 | --- | --- |
 | **▶ Start offline mode** | Same as `start`: sets up the adapter if needed, then runs the services. |
-| **■ Stop & restore Ethernet** | Stops the services and runs `restore`. |
-| **Also run DHCP** | Same as `--dhcp`, for the next start. |
-| **Wired adapter** | The port the console is plugged into. Locked while in use. |
+| **■ Stop and restore Ethernet** | Stops the services and runs `restore`. |
 | **Cable** | Link state and speed. |
-| **PC IP** | *offline mode*, *normal*, or *partly configured* (press Start or Stop to fix). |
-| **Firewall** | This tool's inbound rules (n/4). |
-| **Server** | DNS / HTTP / DHCP: `running`, `waiting for link`, `stopped`, `error`, `blocked` or `off`. |
-| **Isolation** | Re-checked every 10 s while the server runs. Red **NOT ISOLATED** means the console could reach the internet through this PC; a warning window explains why. |
-| **Console** | Whether the console answers ping. |
-| **Activity** | DNS answers, connection checks, rejected requests, DHCP replies, and the time of the last check. |
-| **Start / Stop server only** | Runs or stops the services without touching the adapter (like `serve`). |
+| **This PC** | *offline mode*, *normal Ethernet*, or *half configured* (press Start or Stop to fix). |
+| **Firewall** | This tool's inbound rules (n of 4). |
+| **Services** | DNS / HTTP / DHCP: `running`, `waiting for link`, `stopped`, `error`, `blocked` or `off`. |
+| **Internet** | Re-checked every 10 s while running. Red **NOT BLOCKED** means the console could reach the internet through this PC; a warning window explains why. |
+| **Switch 2** | Whether the console answers ping at its address. |
+| **Activity** | Name lookups, connection tests passed (with the time of the last one), refused requests and DHCP replies. |
+| **On the Switch 2** | The settings to enter on the console. |
+| **Adapter** | The port the console is plugged into. Locked while in use. |
+| **Run DHCP** | Same as `--dhcp`, from the next start. |
+| **Minimize to tray** | Minimizing hides the window in the notification area. Click the icon to bring it back; right-click it for Open and Exit. |
+| **Start with Windows** | Opens the window in the tray at sign-in, without asking for administrator rights each time (same as `startup on`). It does not change Ethernet until you press Start. |
+| **Show log** | The full log, also written to the logs folder. It opens by itself when something fails. |
+| **Run services only** | Runs or stops the services without touching the adapter (like `serve`). |
 
-When you close the window, it asks whether to restore the adapter. **No** leaves the adapter in offline mode (like `--keep`).
+When you close the window, it asks whether to restore the adapter. **No** leaves the adapter in offline mode (like `--keep`). Only one window can be open at a time; opening the exe again brings back the one in the tray.
 
 ## How it works
 
@@ -170,6 +179,7 @@ python packaging\build_zip.py       # builds dist\switch2-offline-cli-<version>.
 | `switch2_offline/windows.py` | Adapter setup/restore/status through PowerShell, plus the isolation checks. |
 | `switch2_offline/cli.py` | The commands. |
 | `switch2_offline/gui.py` | The tkinter window, built on the same functions. |
+| `switch2_offline/tray.py` | The notification-area icon (Windows API through ctypes). |
 | `packaging/` | Build scripts for the exe (PyInstaller) and the command-line zip, and the zip's `switch2-offline.cmd` launcher. |
 | `.github/workflows/build.yml` | Runs the tests and builds the exe and the zip on every push. Pushing a `v*` tag attaches both to that release. |
 

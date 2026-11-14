@@ -12,11 +12,14 @@ import ctypes
 import ipaddress
 import json
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from . import DEFAULT_ADAPTER, FIREWALL_GROUP
+from . import (DEFAULT_ADAPTER, DEFAULT_CONSOLE_IP, DEFAULT_IP, DEFAULT_PREFIX, FIREWALL_GROUP,
+               default_log_dir)
 
 FIREWALL_RULES = 4
 NO_WINDOW = 0x08000000  # CREATE_NO_WINDOW: no console flashes from the GUI
@@ -336,3 +339,68 @@ if (Get-NetIPAddress -InterfaceAlias $a -IPAddress $ip -ErrorAction SilentlyCont
   throw "Windows kept $ip on '$a'. Unplug and replug the cable, or disable and re-enable the adapter, then restore again."
 }}
 """)
+
+
+# ------------------------------------------------------ start at sign-in
+# A scheduled task, not the Run registry key: the GUI needs administrator
+# rights, and Windows skips Run-key programs that need elevation, while a task
+# can start them elevated without a prompt.
+STARTUP_TASK = "Switch2 Offline Ethernet"
+
+
+def gui_options(args, dhcp: bool | None = None) -> list[str]:
+    """The GUI options in `args` that differ from the defaults."""
+    options = ["--adapter", args.adapter] if args.adapter else []
+    for flag, value, default in (("--ip", args.ip, DEFAULT_IP),
+                                 ("--console-ip", args.console_ip, DEFAULT_CONSOLE_IP),
+                                 ("--prefix", args.prefix, DEFAULT_PREFIX)):
+        if value != default:
+            options += [flag, str(value)]
+    if args.dhcp if dhcp is None else dhcp:
+        options.append("--dhcp")
+    if Path(args.log_dir) != default_log_dir():
+        options += ["--log-dir", str(args.log_dir)]
+    return options
+
+
+def gui_command(options: list[str], windowless: bool = False) -> tuple[str, list[str], str]:
+    """(program, arguments, working folder) that open the GUI with `options`."""
+    if getattr(sys, "frozen", False):  # the exe opens the GUI by itself
+        return sys.executable, list(options), str(Path(sys.executable).parent)
+    python = Path(sys.executable)
+    if windowless and python.with_name("pythonw.exe").exists():
+        python = python.with_name("pythonw.exe")
+    # Run from the folder above the package, so `-m switch2_offline` also
+    # resolves from a clone or the extracted zip.
+    return str(python), ["-m", "switch2_offline", "gui", *options], str(Path(__file__).resolve().parents[1])
+
+
+def startup_enabled() -> bool:
+    out = _powershell(f"[bool](Get-ScheduledTask -TaskName {_quote(STARTUP_TASK)} -ErrorAction SilentlyContinue)")
+    return out.strip() == "True"
+
+
+def enable_startup(options: list[str]) -> str:
+    """Open the GUI in the tray at every sign-in. Returns the command it runs."""
+    require_admin()
+    program, arguments, folder = gui_command([*options, "--tray"], windowless=True)
+    arguments = subprocess.list2cmdline(arguments)
+    _powershell(f"""
+$user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+$action = New-ScheduledTaskAction -Execute {_quote(program)} -Argument {_quote(arguments)} -WorkingDirectory {_quote(folder)}
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+$principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+  -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName {_quote(STARTUP_TASK)} -Action $action -Trigger $trigger `
+  -Principal $principal -Settings $settings -Force `
+  -Description 'Opens Switch 2 Offline Ethernet in the notification area at sign-in.' | Out-Null
+""")
+    return f"{program} {arguments}"
+
+
+def disable_startup() -> None:
+    require_admin()
+    task = _quote(STARTUP_TASK)
+    _powershell(f"if (Get-ScheduledTask -TaskName {task} -ErrorAction SilentlyContinue) "
+                f"{{ Unregister-ScheduledTask -TaskName {task} -Confirm:$false }}")
