@@ -21,7 +21,7 @@ Everything works from the **command line**. The **GUI** (`SwitchOfflineEthernet.
 
 Pick one. Each option runs the same code. All but the exe need [Python](https://www.python.org/downloads/) 3.9 or newer and nothing else.
 
-- **GUI (exe)**: download `SwitchOfflineEthernet.exe` from [Releases](https://github.com/fernando-granco/switch2-ethernet-offline/releases). Python is not needed.
+- **GUI (exe)**: download `SwitchOfflineEthernet.exe` from [Releases](https://github.com/fernando-granco/switch2-ethernet-offline/releases). Python is not needed. As this changes your network configuration, it might give you an anti virus alert.
 - **Command line (zip)**:
   1. Download `switch2-offline-cli-<version>.zip` from [Releases](https://github.com/fernando-granco/switch2-ethernet-offline/releases) and extract it anywhere.
   2. In an administrator terminal, run `switch2-offline.cmd` from that folder in place of `switch2-offline` (in PowerShell, `.\switch2-offline.cmd start`). You can call it from any folder by its full path.
